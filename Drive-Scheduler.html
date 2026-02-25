@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DRIVE: Airport PU / DROP</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; max-width: 980px; }
+    h1 { margin: 0 0 8px; }
+    .muted { color: #555; margin: 0 0 18px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .full { grid-column: 1 / -1; }
+    label { display: block; font-size: 12px; color: #333; margin-bottom: 6px; }
+    input, select, textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 10px; font-size: 14px; box-sizing: border-box; }
+    textarea { min-height: 90px; resize: vertical; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+    button.primary { border-color: #1a73e8; color: #fff; background: #1a73e8; }
+    button:active { transform: translateY(1px); }
+    .preview { margin-top: 18px; padding: 14px; border: 1px solid #e5e5e5; border-radius: 12px; background: #fafafa; }
+    .preview pre { white-space: pre-wrap; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+    .small { font-size: 12px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>DRIVE: Airport Pickup / Dropoff</h1>
+  <p class="muted">Save as <b>drive-airport.html</b> and open it. Fill the form → add to Google Calendar or download .ics.</p>
+
+  <div class="grid">
+    <div>
+      <label>Type</label>
+      <select id="driveType">
+        <option value="PICKUP">PU (Airport → Residence)</option>
+        <option value="DROPOFF">DROP (Residence → Airport)</option>
+      </select>
+    </div>
+
+    <div>
+      <label>Airport (optional)</label>
+      <input id="airport" placeholder="e.g., PBI, FLL, MIA" />
+    </div>
+
+    <div>
+      <label>Name</label>
+      <input id="name" placeholder="Passenger name" />
+    </div>
+
+    <div>
+      <label>Phone</label>
+      <input id="phone" placeholder="772-555-1212" />
+    </div>
+
+    <div>
+      <label>Date</label>
+      <input id="date" type="date" />
+    </div>
+
+    <div>
+      <label id="timeLabel">Flight Arrival Time (PU) / Time (DROP)</label>
+      <input id="time" type="time" />
+      <div class="small">Titles display like: <b>2:35 pm</b></div>
+    </div>
+
+    <div class="full" id="flightWrap">
+      <label>Flight # (PU)</label>
+      <input id="flight" placeholder="e.g., AA1234" />
+    </div>
+
+    <div class="full">
+      <label id="pickupLabel">Pickup Location</label>
+      <input id="pickup" placeholder="Airport terminal / baggage claim / rideshare pickup" />
+      <div class="small" id="pickupHint"></div>
+    </div>
+
+    <div class="full">
+      <label id="dropoffLabel">Dropoff Location</label>
+      <input id="dropoff" placeholder="Residential address" />
+      <div class="small" id="dropoffHint"></div>
+      <div class="small"><b>Calendar Location field</b> will always be set to the <b>Residential Address</b> (PU: Dropoff / DROP: Pickup).</div>
+    </div>
+
+    <div class="full">
+      <label>Notes (optional)</label>
+      <textarea id="notes" placeholder="Terminal/gate, baggage claim, parking, special instructions, etc."></textarea>
+    </div>
+
+    <div>
+      <label>Event Length (minutes)</label>
+      <input id="duration" type="number" value="60" min="15" step="5" />
+    </div>
+
+    <div>
+      <label>Reminder (minutes before, for .ics)</label>
+      <input id="reminder" type="number" value="30" min="0" step="5" />
+    </div>
+  </div>
+
+  <div class="row">
+    <button class="primary" id="btnGoogle">Add to Google Calendar</button>
+    <button id="btnICS">Download .ics File</button>
+    <button id="btnClear">Clear</button>
+  </div>
+
+  <div class="preview">
+    <div class="small">Preview</div>
+    <pre id="previewText">(nothing yet)</pre>
+  </div>
+
+<script>
+  function pad2(n){ return String(n).padStart(2,'0'); }
+
+  // "HH:MM" -> "h:MM am/pm"
+  function toAmPm(timeStr){
+    if(!timeStr) return "";
+    const [hStr, mStr] = timeStr.split(":");
+    let h = Number(hStr);
+    const m = pad2(Number(mStr));
+    const ampm = h >= 12 ? "pm" : "am";
+    h = h % 12;
+    if (h === 0) h = 12;
+    return `${h}:${m} ${ampm}`;
+  }
+
+  // local date/time -> UTC stamp for Google Calendar + ICS
+  function toUtcStamp(dateStr, timeStr){
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const [hh,mm] = timeStr.split(':').map(Number);
+    const local = new Date(y, m-1, d, hh, mm, 0);
+    return [
+      local.getUTCFullYear(),
+      pad2(local.getUTCMonth()+1),
+      pad2(local.getUTCDate()),
+      "T",
+      pad2(local.getUTCHours()),
+      pad2(local.getUTCMinutes()),
+      pad2(local.getUTCSeconds()),
+      "Z"
+    ].join("");
+  }
+
+  function addMinutes(dateStr, timeStr, minutes){
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const [hh,mm] = timeStr.split(':').map(Number);
+    const local = new Date(y, m-1, d, hh, mm, 0);
+    local.setMinutes(local.getMinutes() + Number(minutes || 0));
+    return {
+      date: `${local.getFullYear()}-${pad2(local.getMonth()+1)}-${pad2(local.getDate())}`,
+      time: `${pad2(local.getHours())}:${pad2(local.getMinutes())}`
+    };
+  }
+
+  function escICS(s){
+    return (s || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\n/g, "\\n")
+      .replace(/,/g, "\\,")
+      .replace(/;/g, "\\;");
+  }
+
+  function uuid(){
+    return (crypto?.randomUUID ? crypto.randomUUID() : `uid-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  }
+
+  function setLabels(){
+    const t = document.getElementById('driveType').value;
+    const pickupLabel = document.getElementById('pickupLabel');
+    const dropoffLabel = document.getElementById('dropoffLabel');
+    const pickup = document.getElementById('pickup');
+    const dropoff = document.getElementById('dropoff');
+    const pickupHint = document.getElementById('pickupHint');
+    const dropoffHint = document.getElementById('dropoffHint');
+    const flightWrap = document.getElementById('flightWrap');
+    const timeLabel = document.getElementById('timeLabel');
+
+    if (t === "PICKUP") {
+      timeLabel.textContent = "Flight Arrival Time (PU)";
+      pickupLabel.textContent = "Pickup Location (Airport)";
+      dropoffLabel.textContent = "Dropoff Location (Residence)";
+      pickup.placeholder = "Airport terminal / baggage claim / rideshare pickup";
+      dropoff.placeholder = "Residential address";
+      pickupHint.textContent = "PU: Airport → Residence";
+      dropoffHint.textContent = "";
+      flightWrap.style.display = "block";
+    } else {
+      timeLabel.textContent = "Time (DROP)";
+      pickupLabel.textContent = "Pickup Location (Residence)";
+      dropoffLabel.textContent = "Dropoff Location (Airport)";
+      pickup.placeholder = "Residential address";
+      dropoff.placeholder = "Airport terminal / airline / departures";
+      pickupHint.textContent = "DROP: Residence → Airport";
+      dropoffHint.textContent = "";
+      flightWrap.style.display = "none";
+      document.getElementById('flight').value = "";
+    }
+  }
+
+  // ✅ Residential address rule:
+  // PU: residential = Dropoff
+  // DROP: residential = Pickup
+  function getResidentialAddress(){
+    const type = document.getElementById('driveType').value;
+    const pickup = document.getElementById('pickup').value.trim();
+    const dropoff = document.getElementById('dropoff').value.trim();
+    return (type === "PICKUP") ? dropoff : pickup;
+  }
+
+  function buildTitle(){
+    const type = document.getElementById('driveType').value;
+    const name = document.getElementById('name').value.trim();
+    const phone = document.getElementById('phone').value.trim();
+    const time = toAmPm(document.getElementById('time').value);
+    const flight = document.getElementById('flight').value.trim();
+    const pickupAddress = document.getElementById('pickup').value.trim(); // used in DROP title
+
+    if (type === "PICKUP") {
+      // DRIVE: PU [Name] [Flight Arrival Time] [Flight #] [Phone]
+      const parts = ["DRIVE:", "PU"];
+      if (name) parts.push(name);
+      if (time) parts.push(time);
+      if (flight) parts.push(flight);
+      if (phone) parts.push(phone);
+      return parts.join(" ");
+    } else {
+      // DRIVE: DROP [Name] [Time] [Address] [Phone]
+      const parts = ["DRIVE:", "DROP"];
+      if (name) parts.push(name);
+      if (time) parts.push(time);
+      if (pickupAddress) parts.push(pickupAddress);
+      if (phone) parts.push(phone);
+      return parts.join(" ");
+    }
+  }
+
+  function buildDescription(){
+    const type = document.getElementById('driveType').value;
+    const airport = document.getElementById('airport').value.trim();
+    const name = document.getElementById('name').value.trim();
+    const phone = document.getElementById('phone').value.trim();
+    const flight = document.getElementById('flight').value.trim();
+    const pickup = document.getElementById('pickup').value.trim();
+    const dropoff = document.getElementById('dropoff').value.trim();
+    const notes = document.getElementById('notes').value.trim();
+
+    const lines = [];
+    lines.push(`Type: ${type === "PICKUP" ? "PU (Airport → Residence)" : "DROP (Residence → Airport)"}`);
+    if (name) lines.push(`Name: ${name}`);
+    if (phone) lines.push(`Phone: ${phone}`);
+    if (airport) lines.push(`Airport: ${airport}`);
+    if (type === "PICKUP" && flight) lines.push(`Flight: ${flight}`);
+    if (pickup) lines.push(`Pickup: ${pickup}`);
+    if (dropoff) lines.push(`Dropoff: ${dropoff}`);
+    if (notes) lines.push(`Notes: ${notes}`);
+
+    // Helpful: always echo the residential address explicitly
+    const res = getResidentialAddress();
+    if (res) lines.push(`Residential Address: ${res}`);
+
+    return lines.join("\n");
+  }
+
+  function buildEvent(){
+    const date = document.getElementById('date').value;
+    const time = document.getElementById('time').value;
+    const duration = Number(document.getElementById('duration').value || 60);
+    const reminder = Number(document.getElementById('reminder').value || 0);
+
+    if(!date || !time){
+      alert("Please enter a Date and Time.");
+      return null;
+    }
+
+    const endLocal = addMinutes(date, time, duration);
+    const startUtc = toUtcStamp(date, time);
+    const endUtc = toUtcStamp(endLocal.date, endLocal.time);
+
+    const title = buildTitle();
+    const description = buildDescription();
+
+    // ✅ Location always = residential address (for BOTH PU and DROP)
+    const location = getResidentialAddress();
+
+    return { title, location, description, startUtc, endUtc, reminder, date, time, endLocal };
+  }
+
+  function updatePreview(ev){
+    const preview = document.getElementById('previewText');
+    if(!ev){ preview.textContent = "(nothing yet)"; return; }
+    preview.textContent =
+`Title:
+${ev.title}
+
+Starts: ${ev.date} ${toAmPm(ev.time)}
+Ends:   ${ev.endLocal.date} ${toAmPm(ev.endLocal.time)}
+
+Location (Residential Address):
+${ev.location || "(blank)"}
+
+Description:
+${ev.description}`;
+  }
+
+  document.getElementById('btnGoogle').addEventListener('click', () => {
+    const ev = buildEvent();
+    if(!ev) return;
+    updatePreview(ev);
+
+    const base = "https://calendar.google.com/calendar/render?action=TEMPLATE";
+    const params = new URLSearchParams({
+      text: ev.title,
+      dates: `${ev.startUtc}/${ev.endUtc}`,
+      details: ev.description,
+      location: ev.location
+    });
+
+    window.open(`${base}&${params.toString()}`, "_blank");
+  });
+
+  document.getElementById('btnICS').addEventListener('click', () => {
+    const ev = buildEvent();
+    if(!ev) return;
+    updatePreview(ev);
+
+    const uid = uuid();
+    const now = new Date();
+    const dtstamp = [
+      now.getUTCFullYear(),
+      pad2(now.getUTCMonth()+1),
+      pad2(now.getUTCDate()),
+      "T",
+      pad2(now.getUTCHours()),
+      pad2(now.getUTCMinutes()),
+      pad2(now.getUTCSeconds()),
+      "Z"
+    ].join("");
+
+    const ics =
+`BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Local DRIVE Planner//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:${uid}
+DTSTAMP:${dtstamp}
+DTSTART:${ev.startUtc}
+DTEND:${ev.endUtc}
+SUMMARY:${escICS(ev.title)}
+LOCATION:${escICS(ev.location)}
+DESCRIPTION:${escICS(ev.description)}
+BEGIN:VALARM
+TRIGGER:-PT${Math.max(0, ev.reminder)}M
+ACTION:DISPLAY
+DESCRIPTION:Reminder
+END:VALARM
+END:VEVENT
+END:VCALENDAR`;
+
+    const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "DRIVE-airport.ics";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+
+  document.getElementById('btnClear').addEventListener('click', () => {
+    ["airport","name","phone","date","time","flight","pickup","dropoff","notes"].forEach(id => document.getElementById(id).value = "");
+    document.getElementById('duration').value = 60;
+    document.getElementById('reminder').value = 30;
+    document.getElementById('driveType').value = "PICKUP";
+    setLabels();
+    document.getElementById('previewText').textContent = "(nothing yet)";
+  });
+
+  document.getElementById('driveType').addEventListener('change', setLabels);
+  setLabels();
+</script>
+</body>
+</html>
